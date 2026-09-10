@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Time Up — Firestore security rules.
+// Publish them from Firebase Console → Firestore Database → Rules (paste all of this, then Publish).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Admins: every admin can see the list and add/remove other admins.
+    // Nobody can delete their own admin record, so the panel always keeps at least one admin.
+    match /admins/{adminId} {
+      allow get: if signedIn() && (request.auth.uid == adminId || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && request.auth.uid != adminId;
+    }
+
+    // App users: profile written only by admins; readable by the user and by admins.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+
+      // The user's own data (subscribers, offers…): the user and admins.
+      match /{document=**} {
+        allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
+      }
+    }
+  }
+}

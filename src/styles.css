@@ -1,0 +1,182 @@
+:root {
+  --bg: #020618;
+  --panel: #0f172b;
+  --line: #1e293b;
+  --text: #e5e7eb;
+  --muted: #94a3b8;
+  --accent: #00bcd4;
+  --accent-deep: #0097a7;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: linear-gradient(135deg, #020618, #0f172b, #020618);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  min-height: 100vh;
+}
+
+.center { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.page { max-width: 1080px; margin: 0 auto; padding: 24px; }
+
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 4px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.card.narrow { width: 100%; max-width: 380px; }
+
+label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
+
+input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0b1322;
+  color: var(--text);
+  font-size: 14px;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #16233a;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: .6; cursor: default; }
+
+button.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border: none;
+  color: #fff;
+  margin-top: 16px;
+  width: 100%;
+}
+.row button.primary { width: auto; margin-top: 0; align-self: end; }
+button.danger { color: #fca5a5; }
+
+.row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.row.between { justify-content: space-between; align-items: center; }
+.grow { flex: 1; min-width: 180px; }
+.search { max-width: 280px; }
+
+.muted { color: var(--muted); margin: 4px 0 0; }
+.error { color: #fca5a5; margin-top: 12px; }
+
+.created {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,188,212,.35);
+  background: rgba(0,188,212,.08);
+}
+.creds { display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+code {
+  background: #0b1322;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 14px;
+  letter-spacing: .5px;
+}
+
+table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--muted);
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+td { padding: 10px 8px; border-bottom: 1px solid var(--line); }
+tr.inactive { opacity: .5; }
+td.actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+.pill { padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.pill.on { background: rgba(34,197,94,.15); color: #4ade80; }
+.pill.off { background: rgba(239,68,68,.15); color: #fca5a5; }
+
+/* شبكة نموذج إضافة مستخدم */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 14px;
+}
+.grid .span2 { grid-column: span 2; }
+@media (max-width: 640px) { .grid .span2 { grid-column: span 1; } }
+
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0b1322;
+  color: var(--text);
+  font-size: 14px;
+}
+select:focus { outline: none; border-color: var(--accent); }
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline dotted;
+}
+button.link:hover { color: var(--accent); }
+
+tr.details td { background: #0b1322; }
+.detailgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  padding: 6px 2px;
+}
+.detailgrid b { color: var(--muted); font-weight: 600; margin-right: 6px; font-size: 12px; }
+.detailgrid .span2 { grid-column: span 2; }
+
+button.whatsapp {
+  background: rgba(37, 211, 102, .12);
+  border-color: rgba(37, 211, 102, .45);
+  color: #4ade80;
+}
+button.whatsapp:hover { border-color: #25d366; }
+
+/* رابط بشكل زر (لواتساب) */
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.btn.whatsapp {
+  background: rgba(37, 211, 102, .12);
+  border-color: rgba(37, 211, 102, .45);
+  color: #4ade80;
+}
+a.btn.whatsapp:hover { border-color: #25d366; }
+button.whatsapp:disabled { opacity: .4; }
