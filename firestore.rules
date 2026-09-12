@@ -22,6 +22,18 @@ service cloud.firestore {
       allow delete: if isAdmin() && request.auth.uid != adminId;
     }
 
+    // Feedback from the app: anonymous. Any signed-in user can send one;
+    // only these fields are accepted, so no name or user id can be stored.
+    // Only admins can read, mark as read, or delete.
+    match /feedback/{feedbackId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['message', 'rating', 'platform', 'appVersion', 'read', 'createdAt'])
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 2000;
+      allow read, update, delete: if isAdmin();
+    }
+
     // App users: profile written only by admins; readable by the user and by admins.
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());

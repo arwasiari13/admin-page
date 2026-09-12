@@ -561,7 +561,104 @@ function AdminPanel() {
         )}
       </div>
 
+      <FeedbackCard />
+
       <AdminsCard />
+    </div>
+  );
+}
+
+interface FeedbackRecord {
+  id: string;
+  message: string;
+  rating?: number | null;
+  platform?: string;
+  appVersion?: string;
+  read?: boolean;
+  createdAt?: any;
+}
+
+/** ملاحظات المستخدمين المرسلة من التطبيق (الإعدادات ← أرسل ملاحظاتك) */
+function FeedbackCard() {
+  const [items, setItems] = useState<FeedbackRecord[]>([]);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(
+    () =>
+      onSnapshot(
+        query(collection(db, 'feedback'), orderBy('createdAt', 'desc')),
+        (snap) => {
+          setLoadError('');
+          setItems(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        },
+        (err) => setLoadError(err.code === 'permission-denied' ? RULES_MSG : err.message)
+      ),
+    []
+  );
+
+  const unread = items.filter((f) => !f.read).length;
+
+  const toggleRead = async (f: FeedbackRecord) => {
+    try {
+      await updateDoc(doc(db, 'feedback', f.id), { read: !f.read });
+    } catch (err: any) {
+      alert(err?.code === 'permission-denied' ? RULES_MSG : err?.message || 'Could not update.');
+    }
+  };
+
+  const remove = async (f: FeedbackRecord) => {
+    if (!confirm('Delete this feedback?')) return;
+    try {
+      await deleteDoc(doc(db, 'feedback', f.id));
+    } catch (err: any) {
+      alert(err?.code === 'permission-denied' ? RULES_MSG : err?.message || 'Could not delete.');
+    }
+  };
+
+  const formatDate = (ts: any) => (ts?.toDate ? ts.toDate().toLocaleString() : '—');
+
+  return (
+    <div className="card">
+      <h2>
+        Feedback ({items.length}
+        {unread > 0 ? ` · ${unread} new` : ''})
+      </h2>
+      <p className="muted">
+        Anonymous messages sent from the app (Settings → Send feedback). The sender&apos;s name is
+        not stored.
+      </p>
+
+      {loadError && <p className="error">{loadError}</p>}
+
+      {items.length === 0 ? (
+        <p className="muted">No feedback yet.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Rating</th>
+              <th>Message</th>
+              <th>Date</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((f) => (
+              <tr key={f.id} className={f.read ? 'inactive' : ''}>
+                <td>{f.rating ? '★'.repeat(f.rating) + '☆'.repeat(5 - f.rating) : '—'}</td>
+                <td style={{ whiteSpace: 'pre-wrap', maxWidth: 420 }}>{f.message}</td>
+                <td>{formatDate(f.createdAt)}</td>
+                <td className="actions">
+                  <button onClick={() => toggleRead(f)}>{f.read ? 'Mark unread' : 'Mark read'}</button>
+                  <button className="danger" onClick={() => remove(f)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -575,7 +672,7 @@ interface AdminRecord {
 }
 
 const RULES_MSG =
-  'Permission denied: publish the new Firestore rules (admin_web/firestore.rules) to manage admins.';
+  'Permission denied: publish the latest Firestore rules (admin/firestore.rules) to manage admins and feedback.';
 
 /**
  * المشرفون: قائمة + إضافة مشرف جديد + سحب صلاحية مشرف.
