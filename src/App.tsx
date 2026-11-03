@@ -15,44 +15,49 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
 } from 'firebase/firestore';
 import { Fragment, useEffect, useState } from 'react';
-import {
-  generateCode,
-  suggestUsername,
-  usernameExists,
-  validateUsername,
-} from './credentials';
-import { auth, db, getWorkerAuth, usernameToEmail } from './firebase';
-import { WILAYAS } from './wilayas';
-import { buildCredentialsMessage, whatsappLink } from './whatsapp';
+import { addMonths, DURATIONS, durationLabel, generateCode } from './credentials';
+import { auth, db, getWorkerAuth } from './firebase';
+import { buildCodeMessage, whatsappLink } from './whatsapp';
 
 interface AppUser {
   id: string;
   username: string;
-  firstName: string;
-  lastName: string;
-  age: string;
-  address: string;
-  wilaya: string;
-  nin: string;
-  phone: string;
-  code: string;
+  password?: string;
+  code?: string;
+  durationMonths?: number;
+  expiresAt?: Timestamp | null;
   active: boolean;
   createdAt?: any;
+  // حقول الحسابات القديمة (المُنشأة يدوياً من اللوحة)
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  age?: string;
+  address?: string;
+  wilaya?: string;
+  nin?: string;
+  phone?: string;
 }
 
-const EMPTY_FORM = {
-  firstName: '',
-  lastName: '',
-  age: '',
-  address: '',
-  wilaya: '',
-  nin: '',
-  phone: '',
-  username: '',
-};
+interface AccessCode {
+  id: string;
+  durationMonths: number;
+  note?: string;
+  used: boolean;
+  usedBy?: string;
+  usedByUsername?: string;
+  usedAt?: any;
+  createdAt?: any;
+  createdBy?: string;
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+const formatDate = (ts: any) => (ts?.toDate ? ts.toDate().toLocaleDateString() : '—');
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -136,19 +141,228 @@ function NotAdmin({ email }: { email: string | null }) {
   );
 }
 
+/** زر واتساب: رابط حقيقي <a> لأن متصفحات الهاتف تحجب window.open */
+function WhatsAppButton({ code, months, label = 'WhatsApp' }: { code: string; months: number; label?: string }) {
+  return (
+    <a
+      className="btn whatsapp"
+      href={whatsappLink(buildCodeMessage(code, durationLabel(months)))}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {label}
+    </a>
+  );
+}
+
+const copy = (text: string) => navigator.clipboard.writeText(text);
+
 function AdminPanel() {
-  const [users, setUsers] = useState<AppUser[]>([]);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
+  return (
+    <div className="page">
+      <header>
+        <h1>Time Up — Admin</h1>
+        <button onClick={() => signOut(auth)}>Sign out</button>
+      </header>
+
+      <CodesCard />
+      <UsersCard />
+      <FeedbackCard />
+      <AdminsCard />
+    </div>
+  );
+}
+
+/**
+ * الأكواد: المشرف يولّد كوداً بمدة معيّنة ويرسله للمستخدم.
+ * المستخدم يدخله في التطبيق (لدي كود) ثم ينشئ اسم المستخدم وكلمة المرور،
+ * فيصبح حسابه صالحاً للمدة المختارة. الكود يُستعمل مرة واحدة فقط.
+ */
+function CodesCard() {
+  const me = auth.currentUser;
+  const [codes, setCodes] = useState<AccessCode[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [months, setMonths] = useState(1);
+  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [justCreated, setJustCreated] = useState<
-    { username: string; code: string; fullName: string; phone: string } | null
-  >(null);
-  const [suggesting, setSuggesting] = useState(false);
-  // رقم يُدخل يدوياً لو لم يُحفظ رقم للمستخدم
-  const [manualPhone, setManualPhone] = useState('');
+  const [justCreated, setJustCreated] = useState<{ code: string; months: number } | null>(null);
+  const [show, setShow] = useState<'unused' | 'used' | 'all'>('unused');
+
+  useEffect(
+    () =>
+      onSnapshot(
+        query(collection(db, 'codes'), orderBy('createdAt', 'desc')),
+        (snap) => {
+          setLoadError('');
+          setCodes(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        },
+        (err) => setLoadError(err.code === 'permission-denied' ? RULES_MSG : err.message)
+      ),
+    []
+  );
+
+  const generate = async () => {
+    setError('');
+    setJustCreated(null);
+    setBusy(true);
+    try {
+      // احتمال التكرار شبه معدوم، لكن نتأكد
+      let code = generateCode();
+      for (let i = 0; i < 5 && (await getDoc(doc(db, 'codes', code))).exists(); i += 1) {
+        code = generateCode();
+      }
+      await setDoc(doc(db, 'codes', code), {
+        durationMonths: months,
+        note: note.trim(),
+        used: false,
+        createdAt: serverTimestamp(),
+        createdBy: me?.email || me?.uid || '',
+      });
+      setJustCreated({ code, months });
+      setNote('');
+    } catch (err: any) {
+      setError(err?.code === 'permission-denied' ? RULES_MSG : err?.message || 'Could not generate.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (c: AccessCode) => {
+    const msg = c.used
+      ? `Delete code ${c.id}?\n\nIt was already used by ${c.usedByUsername || 'a user'} — their account is not affected.`
+      : `Delete code ${c.id}?\n\nNobody will be able to use it.`;
+    if (!confirm(msg)) return;
+    try {
+      await deleteDoc(doc(db, 'codes', c.id));
+    } catch (err: any) {
+      alert(err?.code === 'permission-denied' ? RULES_MSG : err?.message || 'Could not delete.');
+    }
+  };
+
+  const unusedCount = codes.filter((c) => !c.used).length;
+  const visible = codes.filter((c) => (show === 'all' ? true : show === 'used' ? c.used : !c.used));
+
+  return (
+    <div className="card">
+      <h2>Generate a code</h2>
+      <p className="muted">
+        Choose how long the subscription lasts, then send the code to the user. In the app they tap
+        “I have a code”, enter it, and create their own username and password. Each code works once.
+      </p>
+
+      <div className="row" style={{ marginTop: 4 }}>
+        <div>
+          <label>Duration</label>
+          <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+            {DURATIONS.map((m) => (
+              <option key={m} value={m}>
+                {durationLabel(m)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="grow">
+          <label>Note (optional — who it is for)</label>
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ahmed — gym Cité Boussouf" />
+        </div>
+        <button type="button" className="primary" onClick={generate} disabled={busy}>
+          {busy ? 'Generating…' : 'Generate code'}
+        </button>
+      </div>
+
+      {error && <p className="error">{error}</p>}
+
+      {justCreated && (
+        <div className="created">
+          <b>Code created</b> ({durationLabel(justCreated.months)}). Send it to the user:
+          <div className="creds">
+            <code style={{ fontSize: 20, letterSpacing: 3 }}>{justCreated.code}</code>
+            <button onClick={() => copy(justCreated.code)}>Copy</button>
+            <WhatsAppButton code={justCreated.code} months={justCreated.months} label="Send on WhatsApp" />
+          </div>
+        </div>
+      )}
+
+      <div className="row between" style={{ marginTop: 22 }}>
+        <h2>
+          Codes ({codes.length} · {unusedCount} unused)
+        </h2>
+        <select style={{ width: 'auto' }} value={show} onChange={(e) => setShow(e.target.value as any)}>
+          <option value="unused">Unused</option>
+          <option value="used">Used</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+
+      {loadError && <p className="error">{loadError}</p>}
+
+      {visible.length === 0 ? (
+        <p className="muted">No codes here.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Duration</th>
+              <th>Note</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((c) => (
+              <tr key={c.id} className={c.used ? 'inactive' : ''}>
+                <td>
+                  <code>{c.id}</code>
+                </td>
+                <td>{durationLabel(c.durationMonths)}</td>
+                <td>{c.note || '—'}</td>
+                <td>
+                  {c.used ? (
+                    <span className="pill off">Used by {c.usedByUsername || '?'}</span>
+                  ) : (
+                    <span className="pill on">Unused</span>
+                  )}
+                </td>
+                <td>{formatDate(c.createdAt)}</td>
+                <td className="actions">
+                  {!c.used && (
+                    <>
+                      <WhatsAppButton code={c.id} months={c.durationMonths} />
+                      <button onClick={() => copy(c.id)}>Copy</button>
+                    </>
+                  )}
+                  <button className="danger" onClick={() => remove(c)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** حالة اشتراك المستخدم */
+const subscriptionState = (u: AppUser): { label: string; on: boolean; daysLeft: number | null } => {
+  if (u.active === false) return { label: 'Disabled', on: false, daysLeft: null };
+  const expires = u.expiresAt?.toDate?.();
+  if (!expires) return { label: 'Active · no end date', on: true, daysLeft: null };
+  const daysLeft = Math.ceil((expires.getTime() - Date.now()) / DAY);
+  if (daysLeft <= 0) return { label: 'Expired', on: false, daysLeft };
+  return { label: `Active · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`, on: true, daysLeft };
+};
+
+function UsersCard() {
+  const [users, setUsers] = useState<AppUser[]>([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  // مدة التجديد المختارة لكل مستخدم
+  const [renewMonths, setRenewMonths] = useState<Record<string, number>>({});
 
   useEffect(
     () =>
@@ -158,371 +372,108 @@ function AdminPanel() {
     []
   );
 
-  const set = (key: keyof typeof EMPTY_FORM, value: string) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
-
-  const suggest = async () => {
-    if (!form.firstName.trim() && !form.lastName.trim()) {
-      setError('Enter the first and last name first.');
-      return;
-    }
-    setError('');
-    setSuggesting(true);
-    try {
-      const suggestion = await suggestUsername(form.firstName, form.lastName);
-      set('username', suggestion);
-    } catch (err: any) {
-      // أغلب الأخطاء هنا سببها قواعد الأمان غير المنشورة
-      setError(
-        err?.code === 'permission-denied'
-          ? 'Cannot check usernames: publish the Firestore security rules first.'
-          : err?.message || 'Could not suggest a username.'
-      );
-    } finally {
-      setSuggesting(false);
-    }
-  };
-
-  const createUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setJustCreated(null);
-
-    // التحقق من الحقول المطلوبة
-    if (!form.firstName.trim() || !form.lastName.trim()) {
-      setError('First name and last name are required.');
-      return;
-    }
-    const usernameError = validateUsername(form.username);
-    if (usernameError) {
-      setError(usernameError);
-      return;
-    }
-
-    setBusy(true);
-    const username = form.username.trim().toLowerCase();
-
-    try {
-      if (await usernameExists(username)) {
-        setError(`Username "${username}" is already taken.`);
-        setBusy(false);
-        return;
-      }
-
-      const code = generateCode();
-
-      // نسخة ثانية من Firebase حتى لا يخرج المشرف من حسابه
-      const workerAuth = getWorkerAuth();
-      const created = await createUserWithEmailAndPassword(
-        workerAuth,
-        usernameToEmail(username),
-        code
-      );
-      const uid = created.user.uid;
-      await signOut(workerAuth);
-
-      await setDoc(doc(db, 'users', uid), {
-        username,
-        firstName: form.firstName.trim(),
-        lastName: form.lastName.trim(),
-        fullName: `${form.firstName.trim()} ${form.lastName.trim()}`,
-        age: form.age.trim(),
-        address: form.address.trim(),
-        wilaya: form.wilaya,
-        nin: form.nin.trim(),
-        phone: form.phone.trim(),
-        code, // محفوظ ليتمكن المشرف من إرساله مجدداً
-        active: true,
-        role: 'user',
-        createdAt: serverTimestamp(),
-      });
-
-      setJustCreated({
-        username,
-        code,
-        fullName: `${form.firstName.trim()} ${form.lastName.trim()}`,
-        phone: form.phone.trim(),
-      });
-      setForm({ ...EMPTY_FORM });
-      setManualPhone('');
-    } catch (err: any) {
-      setError(
-        err?.code === 'auth/email-already-in-use'
-          ? `Username "${username}" already has a login account.`
-          : err?.message || 'Could not create the user.'
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const toggleActive = async (u: AppUser) => {
     await updateDoc(doc(db, 'users', u.id), { active: !u.active });
   };
 
-  const regenerateCode = async (u: AppUser) => {
-    alert(
-      `The access code can only be changed from Firebase Console → Authentication → ${u.username}@timeup.app → Reset password.\n\nThe browser SDK cannot change another account's password.`
-    );
+  /** التجديد يبدأ من تاريخ الانتهاء إن لم ينتهِ بعد، وإلا من اليوم */
+  const renew = async (u: AppUser) => {
+    const months = renewMonths[u.id] || 1;
+    const current = u.expiresAt?.toDate?.();
+    const base = current && current.getTime() > Date.now() ? current : new Date();
+    const next = addMonths(base, months);
+    if (
+      !confirm(
+        `Renew ${u.username} for ${durationLabel(months)}?\n\nNew end date: ${next.toLocaleDateString()}`
+      )
+    )
+      return;
+    await updateDoc(doc(db, 'users', u.id), {
+      expiresAt: Timestamp.fromDate(next),
+      active: true,
+    });
   };
 
   const removeUser = async (u: AppUser) => {
-    if (!confirm(`Delete ${u.firstName} ${u.lastName} (${u.username})?\n\nThis removes their record and data.`))
-      return;
+    if (!confirm(`Delete ${u.username}?\n\nThis removes their record and data.`)) return;
     await deleteDoc(doc(db, 'users', u.id));
     alert(
-      'Record deleted.\n\nNote: the login account itself must be removed in Firebase Console → Authentication.'
+      'Record deleted.\n\nNote: the login account itself must be removed in Firebase Console → Authentication (until then the username stays taken).'
     );
   };
 
-  const copy = (text: string) => navigator.clipboard.writeText(text);
-
-  /**
-   * زر واتساب.
-   * نستعمل رابطاً حقيقياً <a> وليس window.open لأن متصفحات الهاتف
-   * تحجب النوافذ المنبثقة، فلا يحدث شيء عند الضغط.
-   */
-  const WhatsAppButton = ({
-    fullName,
-    username,
-    code,
-    phone,
-    label = 'WhatsApp',
-  }: {
-    fullName: string;
-    username: string;
-    code: string;
-    phone: string;
-    label?: string;
-  }) => {
-    const link = phone
-      ? whatsappLink(phone, buildCredentialsMessage({ fullName, username, code }))
-      : null;
-
-    if (!link) {
-      return (
-        <button type="button" className="whatsapp" disabled title="No valid phone number">
-          {label}
-        </button>
-      );
-    }
-
-    return (
-      <a className="btn whatsapp" href={link} target="_blank" rel="noopener noreferrer">
-        {label}
-      </a>
-    );
-  };
+  const displayName = (u: AppUser) =>
+    u.fullName || [u.firstName, u.lastName].filter(Boolean).join(' ') || '';
 
   const visible = users.filter((u) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (
-      `${u.firstName} ${u.lastName}`.toLowerCase().includes(q) ||
       u.username?.toLowerCase().includes(q) ||
-      u.phone?.includes(q) ||
-      u.nin?.includes(q) ||
-      u.wilaya?.toLowerCase().includes(q)
+      displayName(u).toLowerCase().includes(q) ||
+      u.code?.toLowerCase().includes(q) ||
+      u.phone?.includes(q)
     );
   });
 
   return (
-    <div className="page">
-      <header>
-        <h1>Time Up — Admin</h1>
-        <button onClick={() => signOut(auth)}>Sign out</button>
-      </header>
-
-      <div className="card">
-        <h2>Add a user</h2>
-        <p className="muted">
-          You choose the username. The access code is generated automatically — send both to the
-          user.
-        </p>
-
-        <form onSubmit={createUser}>
-          <div className="grid">
-            <div>
-              <label>First name *</label>
-              <input value={form.firstName} onChange={(e) => set('firstName', e.target.value)} />
-            </div>
-            <div>
-              <label>Last name *</label>
-              <input value={form.lastName} onChange={(e) => set('lastName', e.target.value)} />
-            </div>
-            <div>
-              <label>Age</label>
-              <input
-                value={form.age}
-                onChange={(e) => set('age', e.target.value.replace(/[^0-9]/g, '').slice(0, 3))}
-                placeholder="32"
-              />
-            </div>
-            <div>
-              <label>Phone</label>
-              <input
-                value={form.phone}
-                onChange={(e) => set('phone', e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
-                placeholder="0555555555"
-              />
-            </div>
-            <div>
-              <label>Wilaya</label>
-              <select value={form.wilaya} onChange={(e) => set('wilaya', e.target.value)}>
-                <option value="">— Select —</option>
-                {WILAYAS.map((w) => (
-                  <option key={w} value={w}>
-                    {w}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label>NIN (national ID)</label>
-              <input
-                value={form.nin}
-                onChange={(e) => set('nin', e.target.value.replace(/[^0-9]/g, '').slice(0, 18))}
-                placeholder="18 digits"
-              />
-            </div>
-            <div className="span2">
-              <label>Address</label>
-              <input
-                value={form.address}
-                onChange={(e) => set('address', e.target.value)}
-                placeholder="Cité ..., Constantine"
-              />
-            </div>
-            <div className="span2">
-              <label>Username *</label>
-              <div className="row">
-                <input
-                  className="grow"
-                  value={form.username}
-                  onChange={(e) => set('username', e.target.value.toLowerCase())}
-                  placeholder="ahmedbenali"
-                />
-                <button type="button" onClick={suggest} disabled={suggesting}>
-                  {suggesting ? 'Checking…' : 'Suggest'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {error && <p className="error">{error}</p>}
-          <button className="primary" disabled={busy}>
-            {busy ? 'Creating…' : 'Create user'}
-          </button>
-        </form>
-
-        {justCreated && (
-          <div className="created">
-            <b>User created.</b> Send these to them:
-            <div className="creds">
-              <span>
-                Username: <code>{justCreated.username}</code>
-              </span>
-              <span>
-                Code: <code>{justCreated.code}</code>
-              </span>
-              <button
-                onClick={() =>
-                  copy(`Username: ${justCreated.username}\nCode: ${justCreated.code}`)
-                }
-              >
-                Copy both
-              </button>
-              <WhatsAppButton
-                fullName={justCreated.fullName}
-                username={justCreated.username}
-                code={justCreated.code}
-                phone={justCreated.phone || manualPhone}
-                label="Send on WhatsApp"
-              />
-            </div>
-
-            {!justCreated.phone && (
-              <div className="row" style={{ marginTop: 10 }}>
-                <div className="grow">
-                  <label style={{ marginTop: 0 }}>
-                    No phone was saved for this user — type one to send:
-                  </label>
-                  <input
-                    placeholder="0555555555"
-                    value={manualPhone}
-                    onChange={(e) =>
-                      setManualPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))
-                    }
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+    <div className="card">
+      <div className="row between">
+        <h2>Users ({users.length})</h2>
+        <input
+          className="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search username, name, code…"
+        />
       </div>
 
-      <div className="card">
-        <div className="row between">
-          <h2>Users ({users.length})</h2>
-          <input
-            className="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, username, phone, NIN…"
-          />
-        </div>
-
-        {visible.length === 0 ? (
-          <p className="muted">No users yet.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Username</th>
-                <th>Code</th>
-                <th>Wilaya</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((u) => (
+      {visible.length === 0 ? (
+        <p className="muted">No users yet.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Password</th>
+              <th>Ends</th>
+              <th>Status</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((u) => {
+              const state = subscriptionState(u);
+              return (
                 <Fragment key={u.id}>
-                  <tr className={u.active ? '' : 'inactive'}>
+                  <tr className={state.on ? '' : 'inactive'}>
                     <td>
-                      <button
-                        className="link"
-                        onClick={() => setExpanded(expanded === u.id ? null : u.id)}
-                      >
-                        {u.firstName} {u.lastName}
+                      <button className="link" onClick={() => setExpanded(expanded === u.id ? null : u.id)}>
+                        {u.username}
                       </button>
+                      {displayName(u) && <div className="muted">{displayName(u)}</div>}
                     </td>
+                    <td>{u.password ? <code>{u.password}</code> : '—'}</td>
+                    <td>{formatDate(u.expiresAt)}</td>
                     <td>
-                      <code>{u.username}</code>
-                    </td>
-                    <td>
-                      <code>{u.code}</code>
-                    </td>
-                    <td>{u.wilaya || '—'}</td>
-                    <td>
-                      <span className={u.active ? 'pill on' : 'pill off'}>
-                        {u.active ? 'Active' : 'Disabled'}
-                      </span>
+                      <span className={state.on ? 'pill on' : 'pill off'}>{state.label}</span>
                     </td>
                     <td className="actions">
-                      <WhatsAppButton
-                        fullName={`${u.firstName} ${u.lastName}`}
-                        username={u.username}
-                        code={u.code}
-                        phone={u.phone}
-                      />
-                      <button onClick={() => copy(`Username: ${u.username}\nCode: ${u.code}`)}>
-                        Copy
-                      </button>
-                      <button onClick={() => toggleActive(u)}>
-                        {u.active ? 'Disable' : 'Enable'}
-                      </button>
+                      <select
+                        style={{ width: 'auto' }}
+                        value={renewMonths[u.id] || 1}
+                        onChange={(e) =>
+                          setRenewMonths((prev) => ({ ...prev, [u.id]: Number(e.target.value) }))
+                        }
+                      >
+                        {DURATIONS.map((m) => (
+                          <option key={m} value={m}>
+                            +{durationLabel(m)}
+                          </option>
+                        ))}
+                      </select>
+                      <button onClick={() => renew(u)}>Renew</button>
+                      <button onClick={() => toggleActive(u)}>{u.active ? 'Disable' : 'Enable'}</button>
                       <button className="danger" onClick={() => removeUser(u)}>
                         Delete
                       </button>
@@ -530,40 +481,40 @@ function AdminPanel() {
                   </tr>
                   {expanded === u.id && (
                     <tr className="details">
-                      <td colSpan={6}>
+                      <td colSpan={5}>
                         <div className="detailgrid">
                           <span>
-                            <b>Age</b> {u.age || '—'}
+                            <b>Code used</b> {u.code ? <code>{u.code}</code> : '—'}
                           </span>
                           <span>
-                            <b>Phone</b> {u.phone || '—'}
+                            <b>Plan</b> {u.durationMonths ? durationLabel(u.durationMonths) : '—'}
                           </span>
                           <span>
-                            <b>NIN</b> {u.nin || '—'}
-                          </span>
-                          <span className="span2">
-                            <b>Address</b> {u.address || '—'}
+                            <b>Joined</b> {formatDate(u.createdAt)}
                           </span>
                           <span>
                             <b>Login</b> <code>{u.username}@timeup.app</code>
                           </span>
-                          <span>
-                            <button onClick={() => regenerateCode(u)}>Reset code…</button>
-                          </span>
+                          {u.phone && (
+                            <span>
+                              <b>Phone</b> {u.phone}
+                            </span>
+                          )}
+                          {u.wilaya && (
+                            <span>
+                              <b>Wilaya</b> {u.wilaya}
+                            </span>
+                          )}
                         </div>
                       </td>
                     </tr>
                   )}
                 </Fragment>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <FeedbackCard />
-
-      <AdminsCard />
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -796,7 +747,7 @@ function AdminsCard() {
     <div className="card">
       <h2>Admins ({admins.length})</h2>
       <p className="muted">
-        Admins can open this panel, create users, and add or remove other admins. They sign in
+        Admins can open this panel, generate codes, manage users, and add or remove other admins. They sign in
         here with their email and password.
       </p>
 
