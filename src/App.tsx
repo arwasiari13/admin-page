@@ -19,7 +19,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { Fragment, useEffect, useState } from 'react';
-import { addMonths, DURATIONS, durationLabel, generateCode } from './credentials';
+import { addDuration, DURATIONS, durationLabel, findDuration, generateCode } from './credentials';
 import { auth, db, getWorkerAuth } from './firebase';
 import { buildCodeMessage, whatsappLink } from './whatsapp';
 
@@ -29,6 +29,7 @@ interface AppUser {
   password?: string;
   code?: string;
   durationMonths?: number;
+  durationDays?: number;
   expiresAt?: Timestamp | null;
   active: boolean;
   createdAt?: any;
@@ -46,6 +47,7 @@ interface AppUser {
 interface AccessCode {
   id: string;
   durationMonths: number;
+  durationDays?: number;
   note?: string;
   used: boolean;
   usedBy?: string;
@@ -142,11 +144,21 @@ function NotAdmin({ email }: { email: string | null }) {
 }
 
 /** زر واتساب: رابط حقيقي <a> لأن متصفحات الهاتف تحجب window.open */
-function WhatsAppButton({ code, months, label = 'WhatsApp' }: { code: string; months: number; label?: string }) {
+function WhatsAppButton({
+  code,
+  months,
+  days,
+  label = 'WhatsApp',
+}: {
+  code: string;
+  months: number;
+  days: number;
+  label?: string;
+}) {
   return (
     <a
       className="btn whatsapp"
-      href={whatsappLink(buildCodeMessage(code, durationLabel(months)))}
+      href={whatsappLink(buildCodeMessage(code, durationLabel(months, days)))}
       target="_blank"
       rel="noopener noreferrer"
     >
@@ -182,11 +194,13 @@ function CodesCard() {
   const me = auth.currentUser;
   const [codes, setCodes] = useState<AccessCode[]>([]);
   const [loadError, setLoadError] = useState('');
-  const [months, setMonths] = useState(1);
+  const [durationKey, setDurationKey] = useState('1m');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [justCreated, setJustCreated] = useState<{ code: string; months: number } | null>(null);
+  const [justCreated, setJustCreated] = useState<{ code: string; months: number; days: number } | null>(
+    null
+  );
   const [show, setShow] = useState<'unused' | 'used' | 'all'>('unused');
 
   useEffect(
@@ -212,14 +226,16 @@ function CodesCard() {
       for (let i = 0; i < 5 && (await getDoc(doc(db, 'codes', code))).exists(); i += 1) {
         code = generateCode();
       }
+      const { months, days } = findDuration(durationKey);
       await setDoc(doc(db, 'codes', code), {
         durationMonths: months,
+        durationDays: days,
         note: note.trim(),
         used: false,
         createdAt: serverTimestamp(),
         createdBy: me?.email || me?.uid || '',
       });
-      setJustCreated({ code, months });
+      setJustCreated({ code, months, days });
       setNote('');
     } catch (err: any) {
       setError(err?.code === 'permission-denied' ? RULES_MSG : err?.message || 'Could not generate.');
@@ -254,10 +270,10 @@ function CodesCard() {
       <div className="row" style={{ marginTop: 4 }}>
         <div>
           <label>Duration</label>
-          <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
-            {DURATIONS.map((m) => (
-              <option key={m} value={m}>
-                {durationLabel(m)}
+          <select value={durationKey} onChange={(e) => setDurationKey(e.target.value)}>
+            {DURATIONS.map((d) => (
+              <option key={d.key} value={d.key}>
+                {durationLabel(d.months, d.days)}
               </option>
             ))}
           </select>
@@ -275,11 +291,16 @@ function CodesCard() {
 
       {justCreated && (
         <div className="created">
-          <b>Code created</b> ({durationLabel(justCreated.months)}). Send it to the user:
+          <b>Code created</b> ({durationLabel(justCreated.months, justCreated.days)}). Send it to the user:
           <div className="creds">
             <code style={{ fontSize: 20, letterSpacing: 3 }}>{justCreated.code}</code>
             <button onClick={() => copy(justCreated.code)}>Copy</button>
-            <WhatsAppButton code={justCreated.code} months={justCreated.months} label="Send on WhatsApp" />
+            <WhatsAppButton
+              code={justCreated.code}
+              months={justCreated.months}
+              days={justCreated.days}
+              label="Send on WhatsApp"
+            />
           </div>
         </div>
       )}
@@ -317,7 +338,7 @@ function CodesCard() {
                 <td>
                   <code>{c.id}</code>
                 </td>
-                <td>{durationLabel(c.durationMonths)}</td>
+                <td>{durationLabel(c.durationMonths, c.durationDays)}</td>
                 <td>{c.note || '—'}</td>
                 <td>
                   {c.used ? (
@@ -330,7 +351,7 @@ function CodesCard() {
                 <td className="actions">
                   {!c.used && (
                     <>
-                      <WhatsAppButton code={c.id} months={c.durationMonths} />
+                      <WhatsAppButton code={c.id} months={c.durationMonths} days={c.durationDays || 0} />
                       <button onClick={() => copy(c.id)}>Copy</button>
                     </>
                   )}
@@ -362,7 +383,7 @@ function UsersCard() {
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   // مدة التجديد المختارة لكل مستخدم
-  const [renewMonths, setRenewMonths] = useState<Record<string, number>>({});
+  const [renewKey, setRenewKey] = useState<Record<string, string>>({});
 
   useEffect(
     () =>
@@ -378,13 +399,13 @@ function UsersCard() {
 
   /** التجديد يبدأ من تاريخ الانتهاء إن لم ينتهِ بعد، وإلا من اليوم */
   const renew = async (u: AppUser) => {
-    const months = renewMonths[u.id] || 1;
+    const { months, days } = findDuration(renewKey[u.id] || '1m');
     const current = u.expiresAt?.toDate?.();
     const base = current && current.getTime() > Date.now() ? current : new Date();
-    const next = addMonths(base, months);
+    const next = addDuration(base, months, days);
     if (
       !confirm(
-        `Renew ${u.username} for ${durationLabel(months)}?\n\nNew end date: ${next.toLocaleDateString()}`
+        `Renew ${u.username} for ${durationLabel(months, days)}?\n\nNew end date: ${next.toLocaleDateString()}`
       )
     )
       return;
@@ -461,14 +482,12 @@ function UsersCard() {
                     <td className="actions">
                       <select
                         style={{ width: 'auto' }}
-                        value={renewMonths[u.id] || 1}
-                        onChange={(e) =>
-                          setRenewMonths((prev) => ({ ...prev, [u.id]: Number(e.target.value) }))
-                        }
+                        value={renewKey[u.id] || '1m'}
+                        onChange={(e) => setRenewKey((prev) => ({ ...prev, [u.id]: e.target.value }))}
                       >
-                        {DURATIONS.map((m) => (
-                          <option key={m} value={m}>
-                            +{durationLabel(m)}
+                        {DURATIONS.map((d) => (
+                          <option key={d.key} value={d.key}>
+                            +{durationLabel(d.months, d.days)}
                           </option>
                         ))}
                       </select>
@@ -487,7 +506,7 @@ function UsersCard() {
                             <b>Code used</b> {u.code ? <code>{u.code}</code> : '—'}
                           </span>
                           <span>
-                            <b>Plan</b> {u.durationMonths ? durationLabel(u.durationMonths) : '—'}
+                            <b>Plan</b> {u.durationMonths || u.durationDays ? durationLabel(u.durationMonths, u.durationDays) : '—'}
                           </span>
                           <span>
                             <b>Joined</b> {formatDate(u.createdAt)}

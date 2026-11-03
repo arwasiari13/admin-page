@@ -26,23 +26,27 @@ service cloud.firestore {
     }
 
     // Sign-up with a code: the new user writes their own profile, in the same transaction
-    // that marks the code as used. Duration is copied from the code, and the end date must
-    // be "now + that many months" (with a few days of tolerance for month lengths / clock).
+    // that marks the code as used. Duration (months + days, e.g. 1 week = 0 months + 7 days)
+    // is copied from the code, and the end date must be "now + that duration"
+    // (with a few days of tolerance for month lengths / clock).
     function validSignup(uid) {
       let data = request.resource.data;
       let codeBefore = get(codePath(data.code)).data;
       let codeAfter = getAfter(codePath(data.code)).data;
-      return data.keys().hasOnly(['username', 'password', 'code', 'durationMonths', 'expiresAt', 'active', 'role', 'createdAt'])
+      let months = codeBefore.get('durationMonths', 0);
+      let days = codeBefore.get('durationDays', 0);
+      return data.keys().hasOnly(['username', 'password', 'code', 'durationMonths', 'durationDays', 'expiresAt', 'active', 'role', 'createdAt'])
         && data.username is string
         && request.auth.token.email == data.username + '@timeup.app'
         && data.password is string
         && codeBefore.used == false
         && codeAfter.used == true
         && codeAfter.usedBy == uid
-        && data.durationMonths == codeBefore.durationMonths
+        && data.durationMonths == months
+        && data.get('durationDays', 0) == days
         && data.expiresAt is timestamp
-        && data.expiresAt > request.time + duration.value(data.durationMonths * 28 - 1, 'd')
-        && data.expiresAt < request.time + duration.value(data.durationMonths * 31 + 2, 'd')
+        && data.expiresAt > request.time + duration.value(months * 28 + days - 1, 'd')
+        && data.expiresAt < request.time + duration.value(months * 31 + days + 2, 'd')
         && data.active == true
         && data.role == 'user'
         && data.createdAt == request.time;
